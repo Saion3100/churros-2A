@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>マジカルチュロリポップ　整理券</title>
+    <style>
+        /* ===== 全体 ===== */
+        body {
+            font-family: "Hiragino Sans", sans-serif;
+            background-color: #fff8f0;
+            text-align: center;
+            padding: 2em;
+            margin: 0;
+            font-size: 20px;
+        }
+
+        /* ===== 見出し ===== */
+        h1 {
+            color: #d17b00;
+            margin-bottom: 1.5em;
+            font-size: 3em;
+        }
+
+        /* ===== 案内テキスト ===== */
+        #guideText {
+            font-size: 1.4em;
+            color: #555;
+            margin-bottom: 1.8em;
+        }
+
+        /* ===== ボタン ===== */
+        button {
+            background-color: #ffb347;
+            border: none;
+            border-radius: 10px;
+            padding: 1.2em 1em;
+            font-size: 2.4em;
+            cursor: pointer;
+            width: 90%;
+            max-width: 500px;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #ffa41b;
+        }
+
+        /* ===== 整理券番号ボックス ===== */
+        .ticket-box {
+            background-color: #ffffff;
+            border: 3px solid #f4a300;
+            border-radius: 20px;
+            padding: 0.4em 0.8em;
+            text-align: center;
+            font-size: 50px;
+            color: #5a3a00;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            margin: 1.5em auto;
+            width: min(90%, 500px);
+            font-weight: bold;
+            min-width: 140px;
+        }
+
+
+        #waitMessage {
+            font-size: 1.3em;
+            color: #444;
+            margin-bottom: 1.5em;
+        }
+
+        /* ===== 呼び出し中番号リスト ===== */
+        .call-list {
+            margin-top: 3em;
+            background-color: #fff;
+            padding: 1.5em;
+            border-radius: 12px;
+            width: 100%;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            overflow-x: auto;
+            max-width: none;
+        }
+
+        .call-list h3 {
+            margin-top: 0;
+            color: #d17b00;
+            font-size: 3em;
+        }
+
+        /* ===== 呼び出し番号 ===== */
+        .call-number {
+            display: inline-block;
+            border: 3px solid #ffb347;
+            border-radius: 10px;
+            padding: 0.7em 1.2em;
+            margin: 0.3em;
+            font-size: 2em;
+            font-weight: bold;
+            color: #d17b00;
+        }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getDatabase, ref, get, push, set, onValue } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+
+        const firebaseConfig = {
+            databaseURL: "https://churros-2a-default-rtdb.asia-southeast1.firebasedatabase.app/"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // HTML要素
+        const getTicketBtn = document.getElementById("getTicket");
+        const yourTicketBox = document.getElementById("yourTicketBox");
+        const callList = document.getElementById("callList");
+        const guideText = document.getElementById("guideText");
+        const waitMessage = document.getElementById("waitMessage");
+
+        let myTicketKey = localStorage.getItem("myTicketKey");
+        let myTicketNum = localStorage.getItem("myTicketNum");
+        let lastNotified = null;
+
+        // 初期UI
+        if (myTicketNum) showMyTicket(myTicketNum);
+        else showGuide();
+
+        // 🎫 整理券取得処理
+        getTicketBtn.addEventListener("click", async () => {
+            if (myTicketKey) {
+                alert("すでに整理券をお持ちです！");
+                return;
+            }
+
+            // 過去最大番号を取得
+            const lastNumRef = ref(db, "lastNumber");
+            const lastNumSnap = await get(lastNumRef);
+            const lastNum = lastNumSnap.exists() ? lastNumSnap.val() : 0;
+            const nextNumber = lastNum + 1;
+
+            // tickets に追加
+            const newTicketRef = push(ref(db, "tickets"));
+            await set(newTicketRef, { number: nextNumber, status: "waiting" });
+
+            // lastNumber 更新
+            await set(lastNumRef, nextNumber);
+
+            myTicketKey = newTicketRef.key;
+            myTicketNum = nextNumber;
+            localStorage.setItem("myTicketKey", myTicketKey);
+            localStorage.setItem("myTicketNum", myTicketNum);
+
+            showMyTicket(nextNumber);
+        });
+
+        // 🧩 案内表示（未取得時）
+        function showGuide() {
+            guideText.textContent = "整理券を取得をクリックして整理券を受け取ってね";
+            getTicketBtn.style.display = "inline-block";
+            yourTicketBox.style.display = "none";
+            waitMessage.style.display = "none";
+        }
+
+        // 🧩 自分の番号を表示
+        function showMyTicket(num) {
+            guideText.textContent = "あなたの番号は";
+            getTicketBtn.style.display = "none";
+            yourTicketBox.style.display = "block";
+            yourTicketBox.textContent = num;
+            waitMessage.style.display = "block";
+
+            const charWidth = 1.2;
+            yourTicketBox.style.width = `${String(num).length * charWidth}em`;
+        }
+
+        // 🔁 呼び出し中番号をリアルタイムで監視
+        const ticketsRef = ref(db, "tickets");
+        onValue(ticketsRef, (snapshot) => {
+            const data = snapshot.val() || {};
+            const calling = Object.values(data)
+                .filter(t => t.status === "calling")
+                .map(t => t.number)
+                .sort((a, b) => a - b);
+
+            renderCallingList(calling);
+
+            // 自分の番号が呼ばれたら通知
+            if (myTicketNum && calling.includes(Number(myTicketNum))) {
+                notifyUser(myTicketNum);
+            }
+
+            // 整理券が削除された（完了）
+            if (myTicketKey && !data[myTicketKey]) {
+                localStorage.clear();
+                myTicketKey = null;
+                myTicketNum = null;
+                alert("商品の受け渡しが完了しました！ご利用ありがとうございます♡");
+                showGuide();
+            }
+        });
+
+        // 📋 呼び出し中リスト描画
+        function renderCallingList(numbers) {
+            callList.innerHTML = "";
+            if (numbers.length === 0) {
+                callList.innerHTML = "<p>現在呼び出し中の番号はありません</p>";
+                return;
+            }
+            numbers.forEach(num => {
+                const div = document.createElement("div");
+                div.className = "call-number";
+                div.textContent = num;
+                callList.appendChild(div);
+            });
+        }
+
+        // 🔔 通知処理
+        function notifyUser(num) {
+            if (lastNotified === num) return;
+            lastNotified = num;
+
+            if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+            alert(`あなたの番号 ${num} が呼ばれました！`);
+
+            if (Notification.permission === "granted") {
+                new Notification(`番号 ${num} が呼ばれました！`);
+            } else if (Notification.permission !== "denied") {
+                Notification.requestPermission().then((perm) => {
+                    if (perm === "granted") new Notification(`番号 ${num} が呼ばれました！`);
+                });
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <h1>マジカルチュロリポップ<br>整理券</h1>
+
+    <div id="guideText"></div>
+
+    <div id="yourTicketBox" class="ticket-box" style="display:none;"></div>
+    <div id="waitMessage" style="display:none;">お呼び出しまでお待ちください</div>
+
+    <button id="getTicket">整理券を取得</button>
+
+    <div class="call-list">
+        <h3>📣 現在呼び出し中の番号</h3>
+        <div id="callList"></div>
+    </div>
+</body>
+
+</html>
